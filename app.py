@@ -1,46 +1,115 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for
+from flask import Flask, render_template_string, request, jsonify, send_from_directory
 from pymongo import MongoClient
 from datetime import datetime
 import os
+import logging
 
+# Initialize Flask app
 app = Flask(__name__)
 
-# MongoDB configuration
-MONGO_URI = "mongodb+srv://akiru:579A3IF7G2D1ELqr@akiru.mneusih.mongodb.net/?retryWrites=true&w=majority"
-client = MongoClient(MONGO_URI)
-db = client['video_website']
-views_collection = db['views']
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Video configuration
+# Configuration
+MONGO_URI = "mongodb+srv://akiru:579A3IF7G2D1ELqr@akiru.mneusih.mongodb.net/?retryWrites=true&w=majority"
 VIDEO_URL = "https://github.com/I-SHOW-AKIRU200/AKIRU-STORAGES/releases/download/video-upload/video.lv_0_20250718084307.mp4"
+APP_NAME = "AKIRU VIDEO"
+
+# Initialize MongoDB connection with error handling
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    client.server_info()  # Test connection
+    db = client['video_website']
+    views_collection = db['views']
+    mongo_connected = True
+    logger.info("Successfully connected to MongoDB")
+except Exception as e:
+    logger.error(f"Could not connect to MongoDB: {e}")
+    mongo_connected = False
+    local_view_count = 0
+
+@app.route('/favicon.ico')
+def favicon():
+    return send_from_directory(os.path.join(app.root_path, 'static'),
+                             'favicon.ico', mimetype='image/vnd.microsoft.icon')
 
 @app.route('/')
 def index():
-    # Get view count
-    view_data = views_collection.find_one({'video_url': VIDEO_URL})
-    view_count = view_data['count'] if view_data else 0
+    try:
+        # View count logic with fallback
+        if mongo_connected:
+            view_data = views_collection.find_one({'video_url': VIDEO_URL})
+            view_count = view_data['count'] if view_data else 0
+            
+            # Increment view count
+            if view_data:
+                views_collection.update_one(
+                    {'video_url': VIDEO_URL},
+                    {'$inc': {'count': 1}}
+                )
+            else:
+                views_collection.insert_one({
+                    'video_url': VIDEO_URL,
+                    'count': 1,
+                    'created_at': datetime.utcnow()
+                })
+        else:
+            global local_view_count
+            view_count = local_view_count
+            local_view_count += 1
+        
+        # Render template
+        return render_template_string(TEMPLATE, 
+                                  app_name=APP_NAME,
+                                  video_url=VIDEO_URL, 
+                                  view_count=view_count, 
+                                  share_url=request.url,
+                                  current_year=datetime.now().year)
     
-    # Increment view count
-    if view_data:
-        views_collection.update_one(
-            {'video_url': VIDEO_URL},
-            {'$inc': {'count': 1}}
-        )
-    else:
-        views_collection.insert_one({
-            'video_url': VIDEO_URL,
-            'count': 1,
-            'created_at': datetime.utcnow()
-        })
-    
-    # Render the template with embedded CSS and JS
-    return render_template_string('''
+    except Exception as e:
+        logger.error(f"Error in index route: {e}")
+        return render_template_string(ERROR_TEMPLATE, 
+                                    app_name=APP_NAME,
+                                    current_year=datetime.now().year), 500
+
+@app.route('/track-view', methods=['POST'])
+def track_view():
+    try:
+        if mongo_connected:
+            views_collection.update_one(
+                {'video_url': VIDEO_URL},
+                {'$inc': {'count': 1}},
+                upsert=True
+            )
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Error tracking view: {e}")
+        return jsonify({'status': 'error'}), 500
+
+@app.errorhandler(404)
+def not_found(error):
+    return render_template_string(ERROR_TEMPLATE, 
+                               app_name=APP_NAME,
+                               current_year=datetime.now().year,
+                               error_message="Page not found"), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return render_template_string(ERROR_TEMPLATE, 
+                               app_name=APP_NAME,
+                               current_year=datetime.now().year,
+                               error_message="Internal server error"), 500
+
+# HTML Templates
+TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AKIRU Video Sharing</title>
+    <title>{{ app_name }}</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <style>
         :root {
             --primary-color: #4a6fa5;
@@ -306,7 +375,7 @@ def index():
 <body>
     <header>
         <div class="container header-content">
-            <a href="/" class="logo">AKIRU VIDEO</a>
+            <a href="/" class="logo">{{ app_name }}</a>
             <div class="video-stats">
                 <span class="views-count">
                     <i>👁️</i> <span id="viewsCount">{{ view_count }}</span> views
@@ -322,7 +391,7 @@ def index():
                 Your browser does not support the video tag.
             </video>
             <div class="video-info">
-                <h1 class="video-title">AKIRU Video</h1>
+                <h1 class="video-title">{{ app_name }}</h1>
                 <div class="video-actions">
                     <button class="btn btn-primary" id="likeBtn">
                         <i>👍</i> Like
@@ -350,14 +419,13 @@ def index():
     </main>
     
     <footer>
-        <p>© 2023 AKIRU Video Sharing. All rights reserved.</p>
+        <p>© {{ current_year }} {{ app_name }}. All rights reserved.</p>
     </footer>
     
     <div class="toast" id="toast">Link copied to clipboard!</div>
     
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const videoUrl = '{{ video_url }}';
             const shareUrl = window.location.href;
             const shareBtn = document.getElementById('shareBtn');
             const shareContainer = document.getElementById('shareContainer');
@@ -391,33 +459,95 @@ def index():
             
             // Like button functionality
             likeBtn.addEventListener('click', function() {
-                // In a real app, you would send an AJAX request to the server
                 this.innerHTML = '<i>👍</i> Liked!';
                 this.classList.add('btn-success');
                 this.classList.remove('btn-primary');
             });
             
-            // Track video views (additional tracking beyond page load)
+            // Track video views when played
             const video = document.querySelector('video');
             video.addEventListener('play', function() {
-                // You could send an additional view count when video is played
-                // fetch('/track-view', { method: 'POST' });
+                fetch('/track-view', { method: 'POST' })
+                    .then(response => response.json())
+                    .then(data => {
+                        if(data.status === 'success') {
+                            const viewsCount = document.getElementById('viewsCount');
+                            viewsCount.textContent = parseInt(viewsCount.textContent) + 1;
+                        }
+                    });
             });
         });
     </script>
 </body>
 </html>
-    ''', video_url=VIDEO_URL, view_count=view_count, share_url=request.url)
+'''
 
-@app.route('/track-view', methods=['POST'])
-def track_view():
-    # Increment view count via AJAX if needed
-    views_collection.update_one(
-        {'video_url': VIDEO_URL},
-        {'$inc': {'count': 1}},
-        upsert=True
-    )
-    return jsonify({'status': 'success'})
+ERROR_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ app_name }} - Error</title>
+    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f8f9fa;
+            color: #343a40;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .error-container {
+            max-width: 600px;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #dc3545;
+            margin-bottom: 1rem;
+        }
+        p {
+            margin-bottom: 2rem;
+            font-size: 1.1rem;
+        }
+        a {
+            color: #007bff;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        footer {
+            margin-top: 2rem;
+            font-size: 0.9rem;
+            color: #6c757d;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1>Oops! Something went wrong</h1>
+        <p>{{ error_message if error_message else "We're experiencing technical difficulties. Please try again later." }}</p>
+        <a href="/">← Return to home page</a>
+        <footer>
+            <p>© {{ current_year }} {{ app_name }}</p>
+        </footer>
+    </div>
+</body>
+</html>
+'''
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    # Create static directory if it doesn't exist
+    if not os.path.exists('static'):
+        os.makedirs('static')
+    
+    # Run the app
+    app.run(host='0.0.0.0', port=5000, debug=False)
