@@ -1,8 +1,12 @@
-from flask import Flask, render_template_string, request, jsonify, send_from_directory
+from flask import Flask, render_template_string, request, send_from_directory, Response
 from pymongo import MongoClient
+from gridfs import GridFS
 from datetime import datetime
 import os
 import logging
+from bson.objectid import ObjectId
+from io import BytesIO
+import requests
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -12,94 +16,120 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration
-MONGO_URI = "mongodb+srv://akiru:579A3IF7G2D1ELqr@akiru.mneusih.mongodb.net/?retryWrites=true&w=majority"
-VIDEO_URL = "https://github.com/I-SHOW-AKIRU200/AKIRU-STORAGES/releases/download/video-upload/video.lv_0_20250718084307.mp4"
+MONGO_URI = "mongodb+srv://AKIRU:1234@cluster0.yrhcncv.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+DB_NAME = "video_db"
 APP_NAME = "AKIRU VIDEO"
+VIDEO_SOURCE = "https://github.com/I-SHOW-AKIRU200/AKIRU-STORAGES/releases/download/video-upload/video.lv_0_20250718084307.mp4"
 
-# Initialize MongoDB connection with error handling
+# Initialize MongoDB connection
 try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    client.server_info()  # Test connection
-    db = client['video_website']
-    views_collection = db['views']
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    fs = GridFS(db)
     mongo_connected = True
     logger.info("Successfully connected to MongoDB")
 except Exception as e:
     logger.error(f"Could not connect to MongoDB: {e}")
     mongo_connected = False
-    local_view_count = 0
+
+def initialize_video():
+    """Store the video in MongoDB if it doesn't exist"""
+    if not mongo_connected:
+        return None
+        
+    # Check if video already exists
+    existing_file = db.fs.files.find_one({"filename": "main_video"})
+    if existing_file:
+        return existing_file["_id"]
+    
+    # Download and store the video
+    try:
+        logger.info("Downloading video from source...")
+        response = requests.get(VIDEO_SOURCE, stream=True)
+        
+        if response.status_code == 200:
+            file_id = fs.put(BytesIO(response.content), 
+                           filename="main_video",
+                           content_type="video/mp4")
+            logger.info(f"Video stored in MongoDB with ID: {file_id}")
+            return file_id
+        else:
+            logger.error(f"Failed to download video. Status: {response.status_code}")
+            return None
+    except Exception as e:
+        logger.error(f"Error initializing video: {e}")
+        return None
+
+# Initialize video on startup
+video_id = initialize_video()
 
 @app.route('/favicon.ico')
 def favicon():
     return send_from_directory(os.path.join(app.root_path, 'static'),
-                             'favicon.ico', mimetype='image/vnd.microsoft.icon')
+                            'favicon.ico', 
+                            mimetype='image/vnd.microsoft.icon')
+
+@app.route('/video')
+def stream_video():
+    """Stream video directly from MongoDB"""
+    if not mongo_connected or not video_id:
+        return "Video service unavailable", 503
+        
+    grid_out = fs.get(video_id)
+    
+    def generate():
+        chunk_size = 8192  # 8KB chunks
+        while True:
+            chunk = grid_out.read(chunk_size)
+            if not chunk:
+                break
+            yield chunk
+    
+    return Response(generate(), 
+                  mimetype=grid_out.content_type,
+                  headers={
+                      "Content-Length": str(grid_out.length),
+                      "Accept-Ranges": "bytes"
+                  })
+
+@app.route('/track-view', methods=['POST'])
+def track_view():
+    """Increment view count via AJAX"""
+    if not mongo_connected or not video_id:
+        return jsonify({"status": "error", "message": "Database unavailable"}), 500
+    
+    try:
+        result = db.views.update_one(
+            {"video_id": str(video_id)},
+            {"$inc": {"count": 1}},
+            upsert=True
+        )
+        return jsonify({"status": "success"})
+    except Exception as e:
+        logger.error(f"Error tracking view: {e}")
+        return jsonify({"status": "error"}), 500
 
 @app.route('/')
 def index():
+    """Main page with video player"""
     try:
-        # View count logic with fallback
-        if mongo_connected:
-            view_data = views_collection.find_one({'video_url': VIDEO_URL})
-            view_count = view_data['count'] if view_data else 0
-            
-            # Increment view count
-            if view_data:
-                views_collection.update_one(
-                    {'video_url': VIDEO_URL},
-                    {'$inc': {'count': 1}}
-                )
-            else:
-                views_collection.insert_one({
-                    'video_url': VIDEO_URL,
-                    'count': 1,
-                    'created_at': datetime.utcnow()
-                })
-        else:
-            global local_view_count
-            view_count = local_view_count
-            local_view_count += 1
+        # Get view count
+        view_count = 0
+        if mongo_connected and video_id:
+            view_data = db.views.find_one({"video_id": str(video_id)})
+            view_count = view_data["count"] if view_data else 0
         
-        # Render template
         return render_template_string(TEMPLATE, 
                                   app_name=APP_NAME,
-                                  video_url=VIDEO_URL, 
-                                  view_count=view_count, 
-                                  share_url=request.url,
+                                  view_count=view_count,
                                   current_year=datetime.now().year)
     
     except Exception as e:
         logger.error(f"Error in index route: {e}")
-        return render_template_string(ERROR_TEMPLATE, 
-                                    app_name=APP_NAME,
-                                    current_year=datetime.now().year), 500
-
-@app.route('/track-view', methods=['POST'])
-def track_view():
-    try:
-        if mongo_connected:
-            views_collection.update_one(
-                {'video_url': VIDEO_URL},
-                {'$inc': {'count': 1}},
-                upsert=True
-            )
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        logger.error(f"Error tracking view: {e}")
-        return jsonify({'status': 'error'}), 500
-
-@app.errorhandler(404)
-def not_found(error):
-    return render_template_string(ERROR_TEMPLATE, 
-                               app_name=APP_NAME,
-                               current_year=datetime.now().year,
-                               error_message="Page not found"), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return render_template_string(ERROR_TEMPLATE, 
-                               app_name=APP_NAME,
-                               current_year=datetime.now().year,
-                               error_message="Internal server error"), 500
+        return render_template_string(ERROR_TEMPLATE,
+                                  app_name=APP_NAME,
+                                  error_message="Service unavailable",
+                                  current_year=datetime.now().year), 500
 
 # HTML Templates
 TEMPLATE = '''
@@ -109,105 +139,69 @@ TEMPLATE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ app_name }}</title>
-    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <link rel="icon" href="/favicon.ico">
     <style>
         :root {
-            --primary-color: #4a6fa5;
-            --secondary-color: #166088;
-            --accent-color: #4fc3f7;
-            --dark-color: #1a2639;
-            --light-color: #f0f4f8;
-            --success-color: #4caf50;
-            --danger-color: #f44336;
+            --primary: #4361ee;
+            --secondary: #3f37c9;
+            --accent: #4895ef;
+            --dark: #1a1a2e;
+            --light: #f8f9fa;
         }
-        
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        
         body {
-            background-color: var(--light-color);
-            color: var(--dark-color);
+            background: var(--light);
+            color: var(--dark);
             line-height: 1.6;
         }
-        
         .container {
             max-width: 1200px;
             margin: 0 auto;
             padding: 20px;
         }
-        
         header {
-            background-color: var(--primary-color);
+            background: var(--primary);
             color: white;
             padding: 20px 0;
-            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        
         .header-content {
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-        
-        .logo {
-            font-size: 24px;
-            font-weight: bold;
-            text-decoration: none;
-            color: white;
-        }
-        
         .video-container {
-            background-color: white;
+            background: white;
             border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
             overflow: hidden;
             margin: 30px 0;
         }
-        
         video {
             width: 100%;
             display: block;
-            outline: none;
+            background: black;
         }
-        
         .video-info {
             padding: 20px;
         }
-        
-        .video-title {
-            font-size: 24px;
-            margin-bottom: 10px;
-            color: var(--dark-color);
-        }
-        
         .video-stats {
             display: flex;
             align-items: center;
-            margin-bottom: 20px;
-            color: #666;
+            gap: 20px;
+            margin: 15px 0;
+            color: #555;
         }
-        
-        .views-count {
-            margin-right: 20px;
-            display: flex;
-            align-items: center;
-        }
-        
-        .views-count i, .like-button i {
-            margin-right: 5px;
-            color: var(--primary-color);
-        }
-        
         .video-actions {
             display: flex;
             gap: 15px;
-            margin-bottom: 20px;
+            margin: 20px 0;
         }
-        
         .btn {
             padding: 8px 16px;
             border: none;
@@ -216,265 +210,84 @@ TEMPLATE = '''
             font-weight: 500;
             display: inline-flex;
             align-items: center;
-            transition: all 0.3s ease;
+            gap: 5px;
+            transition: all 0.3s;
         }
-        
         .btn-primary {
-            background-color: var(--primary-color);
+            background: var(--primary);
             color: white;
         }
-        
         .btn-primary:hover {
-            background-color: var(--secondary-color);
+            background: var(--secondary);
         }
-        
-        .btn-outline {
-            background-color: transparent;
-            border: 1px solid var(--primary-color);
-            color: var(--primary-color);
-        }
-        
-        .btn-outline:hover {
-            background-color: var(--primary-color);
-            color: white;
-        }
-        
-        .btn-success {
-            background-color: var(--success-color);
-            color: white;
-        }
-        
-        .btn-danger {
-            background-color: var(--danger-color);
-            color: white;
-        }
-        
-        .share-container {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: 8px;
-            display: none;
-        }
-        
-        .share-container.active {
-            display: block;
-        }
-        
-        .share-options {
-            display: flex;
-            gap: 10px;
-            margin-top: 10px;
-        }
-        
-        .share-input {
-            flex: 1;
-            padding: 8px;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            font-size: 14px;
-        }
-        
-        .copy-btn {
-            padding: 8px 12px;
-            background-color: var(--primary-color);
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        
-        .copy-btn:hover {
-            background-color: var(--secondary-color);
-        }
-        
-        .social-share {
-            display: flex;
-            gap: 10px;
-            margin-top: 15px;
-        }
-        
-        .social-icon {
-            width: 40px;
-            height: 40px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            color: white;
-            text-decoration: none;
-            font-size: 18px;
-            transition: transform 0.3s ease;
-        }
-        
-        .social-icon:hover {
-            transform: translateY(-3px);
-        }
-        
-        .facebook {
-            background-color: #3b5998;
-        }
-        
-        .twitter {
-            background-color: #1da1f2;
-        }
-        
-        .whatsapp {
-            background-color: #25d366;
-        }
-        
-        .telegram {
-            background-color: #0088cc;
-        }
-        
-        .toast {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            background-color: var(--success-color);
-            color: white;
-            padding: 12px 24px;
-            border-radius: 4px;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-            transform: translateY(100px);
-            opacity: 0;
-            transition: all 0.3s ease;
-            z-index: 1000;
-        }
-        
-        .toast.show {
-            transform: translateY(0);
-            opacity: 1;
-        }
-        
         footer {
             text-align: center;
             padding: 20px;
-            margin-top: 40px;
             color: #666;
-            font-size: 14px;
-        }
-        
-        @media (max-width: 768px) {
-            .header-content {
-                flex-direction: column;
-                text-align: center;
-                gap: 10px;
-            }
-            
-            .video-actions {
-                flex-wrap: wrap;
-            }
-            
-            .share-options {
-                flex-direction: column;
-            }
         }
     </style>
 </head>
 <body>
     <header>
         <div class="container header-content">
-            <a href="/" class="logo">{{ app_name }}</a>
+            <h1>{{ app_name }}</h1>
             <div class="video-stats">
-                <span class="views-count">
-                    <i>👁️</i> <span id="viewsCount">{{ view_count }}</span> views
-                </span>
+                <span id="viewsCount">{{ view_count }}</span> views
             </div>
         </div>
     </header>
-    
+
     <main class="container">
         <div class="video-container">
-            <video controls autoplay>
-                <source src="{{ video_url }}" type="video/mp4">
-                Your browser does not support the video tag.
+            <video controls autoplay id="mainVideo">
+                <source src="/video" type="video/mp4">
+                Your browser does not support HTML5 video.
             </video>
             <div class="video-info">
-                <h1 class="video-title">{{ app_name }}</h1>
                 <div class="video-actions">
                     <button class="btn btn-primary" id="likeBtn">
-                        <i>👍</i> Like
+                        <span>👍</span> Like
                     </button>
-                    <button class="btn btn-outline" id="shareBtn">
-                        <i>🔗</i> Share
+                    <button class="btn btn-primary" id="shareBtn">
+                        <span>🔗</span> Share
                     </button>
-                </div>
-                
-                <div class="share-container" id="shareContainer">
-                    <h3>Share this video</h3>
-                    <div class="share-options">
-                        <input type="text" class="share-input" id="shareLink" value="{{ share_url }}" readonly>
-                        <button class="copy-btn" id="copyBtn">Copy</button>
-                    </div>
-                    <div class="social-share">
-                        <a href="#" class="social-icon facebook" id="facebookShare">f</a>
-                        <a href="#" class="social-icon twitter" id="twitterShare">t</a>
-                        <a href="#" class="social-icon whatsapp" id="whatsappShare">w</a>
-                        <a href="#" class="social-icon telegram" id="telegramShare">tg</a>
-                    </div>
                 </div>
             </div>
         </div>
     </main>
-    
+
     <footer>
         <p>© {{ current_year }} {{ app_name }}. All rights reserved.</p>
     </footer>
-    
-    <div class="toast" id="toast">Link copied to clipboard!</div>
-    
+
     <script>
         document.addEventListener('DOMContentLoaded', function() {
-            const shareUrl = window.location.href;
-            const shareBtn = document.getElementById('shareBtn');
-            const shareContainer = document.getElementById('shareContainer');
-            const copyBtn = document.getElementById('copyBtn');
-            const shareLink = document.getElementById('shareLink');
-            const toast = document.getElementById('toast');
+            const video = document.getElementById('mainVideo');
+            const viewsCount = document.getElementById('viewsCount');
             const likeBtn = document.getElementById('likeBtn');
             
-            // Social share buttons
-            document.getElementById('facebookShare').href = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(shareUrl)}`;
-            document.getElementById('twitterShare').href = `https://twitter.com/intent/tweet?url=${encodeURIComponent(shareUrl)}&text=Check%20out%20this%20video`;
-            document.getElementById('whatsappShare').href = `https://wa.me/?text=${encodeURIComponent(`Check out this video: ${shareUrl}`)}`;
-            document.getElementById('telegramShare').href = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=Check%20out%20this%20video`;
-            
-            // Toggle share container
-            shareBtn.addEventListener('click', function() {
-                shareContainer.classList.toggle('active');
-            });
-            
-            // Copy link to clipboard
-            copyBtn.addEventListener('click', function() {
-                shareLink.select();
-                document.execCommand('copy');
-                
-                // Show toast notification
-                toast.classList.add('show');
-                setTimeout(() => {
-                    toast.classList.remove('show');
-                }, 3000);
-            });
-            
-            // Like button functionality
-            likeBtn.addEventListener('click', function() {
-                this.innerHTML = '<i>👍</i> Liked!';
-                this.classList.add('btn-success');
-                this.classList.remove('btn-primary');
-            });
-            
-            // Track video views when played
-            const video = document.querySelector('video');
+            // Track when video is played
             video.addEventListener('play', function() {
                 fetch('/track-view', { method: 'POST' })
                     .then(response => response.json())
                     .then(data => {
                         if(data.status === 'success') {
-                            const viewsCount = document.getElementById('viewsCount');
                             viewsCount.textContent = parseInt(viewsCount.textContent) + 1;
                         }
                     });
+            });
+
+            // Like button functionality
+            likeBtn.addEventListener('click', function() {
+                this.innerHTML = '<span>👍</span> Liked!';
+                this.style.backgroundColor = '#4CAF50';
+            });
+
+            // Share button functionality
+            document.getElementById('shareBtn').addEventListener('click', function() {
+                navigator.clipboard.writeText(window.location.href)
+                    .then(() => alert('Link copied to clipboard!'))
+                    .catch(() => prompt('Copy this link:', window.location.href));
             });
         });
     </script>
@@ -484,70 +297,52 @@ TEMPLATE = '''
 
 ERROR_TEMPLATE = '''
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ app_name }} - Error</title>
-    <link rel="icon" href="/favicon.ico" type="image/x-icon">
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background-color: #f8f9fa;
-            color: #343a40;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
             margin: 0;
-            text-align: center;
+            background: #f8f9fa;
+            color: #333;
         }
         .error-container {
-            max-width: 600px;
+            text-align: center;
             padding: 2rem;
-            background: white;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
         }
         h1 {
-            color: #dc3545;
+            color: #d9534f;
             margin-bottom: 1rem;
         }
-        p {
-            margin-bottom: 2rem;
-            font-size: 1.1rem;
-        }
         a {
-            color: #007bff;
+            color: #4361ee;
             text-decoration: none;
         }
         a:hover {
             text-decoration: underline;
         }
-        footer {
-            margin-top: 2rem;
-            font-size: 0.9rem;
-            color: #6c757d;
-        }
     </style>
 </head>
 <body>
     <div class="error-container">
-        <h1>Oops! Something went wrong</h1>
-        <p>{{ error_message if error_message else "We're experiencing technical difficulties. Please try again later." }}</p>
-        <a href="/">← Return to home page</a>
-        <footer>
-            <p>© {{ current_year }} {{ app_name }}</p>
-        </footer>
+        <h1>Error</h1>
+        <p>{{ error_message }}</p>
+        <a href="/">Return to home page</a>
     </div>
 </body>
 </html>
 '''
 
 if __name__ == '__main__':
-    # Create static directory if it doesn't exist
+    # Create static directory if needed
     if not os.path.exists('static'):
         os.makedirs('static')
     
     # Run the app
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=5000)
