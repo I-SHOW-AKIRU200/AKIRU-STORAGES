@@ -1,65 +1,91 @@
 from flask import Flask, request, jsonify
 from astrapy import DataAPIClient
-from werkzeug.utils import secure_filename
+import base64
 
-# === Astra Config ===
-ASTRA_DB_APPLICATION_TOKEN = "AstraCS:KQtaGbjtjfWyroxBnOwnAJoZ:60c2bc256fb998419971e7260afa9301ad6e04c47493762bb6c61c508c63ec0b"
-ASTRA_DB_API_ENDPOINT = "https://dfecb377-3c46-4d76-947b-0d66cff1b2c7-us-east-2.apps.astra.datastax.com"
-COLLECTION_NAME = "movie_reviews"
-
-# === Connect to Astra DB ===
-client = DataAPIClient(ASTRA_DB_APPLICATION_TOKEN)
-db = client.get_database_by_api_endpoint(ASTRA_DB_API_ENDPOINT)
-collection = db.get_collection(COLLECTION_NAME)
-
-# === Flask app ===
 app = Flask(__name__)
 
-@app.route('/store', methods=['POST'])
-def upload_file():
-    folder = request.args.get('folder')
-    key = request.args.get('key')
-    file = request.files.get('file')
+# Astra DB config
+ASTRA_DB_ID = "dfecb377-3c46-4d76-947b-0d66cff1b2c7"
+ASTRA_DB_REGION = "us-east-2"
+ASTRA_API_ENDPOINT = f"https://{ASTRA_DB_ID}-{ASTRA_DB_REGION}.apps.astra.datastax.com"
+ASTRA_API_TOKEN = "AstraCS:KQtaGbjtjfWyroxBnOwnAJoZ:60c2bc256fb998419971e7260afa9301ad6e04c47493762bb6c61c508c63ec0b"
 
-    if not folder or not key or not file:
-        return jsonify({'error': 'folder, key, and file required'}), 400
-
-    file_content = file.read()
-    filename = secure_filename(file.filename)
-
-    try:
-        doc = {
-            "folder": folder,
-            "key": key,
-            "filename": filename,
-            "file_data": file_content.decode(errors='ignore')  # You can base64 or encode binary
-        }
-        collection.insert_one(doc)
-        return jsonify({'status': 'uploaded', 'filename': filename})
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-@app.route('/list', methods=['GET'])
-def list_files():
-    folder = request.args.get('folder')
-    key = request.args.get('key')
-
-    docs = collection.find({"folder": folder, "key": key})
-    filenames = [doc["filename"] for doc in docs]
-    return jsonify({"files": filenames})
-
-@app.route('/delete', methods=['GET'])
-def delete_file():
-    folder = request.args.get('folder')
-    key = request.args.get('key')
-    filename = request.args.get('file')
-
-    doc = collection.find_one({"folder": folder, "key": key, "filename": filename})
-    if doc:
-        collection.delete_one({"_id": doc["_id"]})
-        return jsonify({"status": "deleted"})
-    return jsonify({"error": "File not found"}), 404
+# Astra client setup
+client = DataAPIClient(ASTRA_API_TOKEN)
+db = client.get_database_by_api_endpoint(ASTRA_API_ENDPOINT)
+collection = db.get_collection("storage")  # Use your created collection name
 
 @app.route('/')
 def index():
-    return "✅ Astra DB file API is running!"
+    return jsonify({"message": "Astra File Storage API is live."})
+
+@app.route('/store', methods=['POST'])
+def store_file():
+    if 'folder' not in request.form or 'key' not in request.form or 'file' not in request.files:
+        return jsonify({"error": "folder, key, and file required"}), 400
+
+    folder = request.form['folder']
+    key = request.form['key']
+    file = request.files['file']
+    filename = file.filename
+    file_data = base64.b64encode(file.read()).decode("utf-8")
+
+    try:
+        doc_id = f"{folder}_{key}_{filename}"
+        doc = {
+            "_id": doc_id,
+            "folder": folder,
+            "key": key,
+            "filename": filename,
+            "content": file_data
+        }
+        collection.insert_one(doc)
+        return jsonify({"success": True, "file": filename})
+    except Exception as e:
+        return jsonify({"error": str(e)})
+
+@app.route('/list', methods=['GET'])
+def list_files():
+    folder = request.args.get("folder")
+    key = request.args.get("key")
+
+    if not folder or not key:
+        return jsonify({"error": "folder and key required"}), 400
+
+    docs = collection.find({"folder": folder, "key": key})
+    files = [doc["filename"] for doc in docs]
+    return jsonify({"files": files})
+
+@app.route('/download', methods=['GET'])
+def download_file():
+    folder = request.args.get("folder")
+    key = request.args.get("key")
+    filename = request.args.get("file")
+
+    if not folder or not key or not filename:
+        return jsonify({"error": "folder, key, and file required"}), 400
+
+    doc_id = f"{folder}_{key}_{filename}"
+    doc = collection.find_one({"_id": doc_id})
+
+    if not doc:
+        return jsonify({"error": "file not found"}), 404
+
+    return jsonify({
+        "filename": filename,
+        "content_base64": doc["content"]
+    })
+
+@app.route('/delete', methods=['GET'])
+def delete_file():
+    folder = request.args.get("folder")
+    key = request.args.get("key")
+    filename = request.args.get("file")
+
+    if not folder or not key or not filename:
+        return jsonify({"error": "folder, key, and file required"}), 400
+
+    doc_id = f"{folder}_{key}_{filename}"
+    result = collection.delete_one({"_id": doc_id})
+
+    return jsonify({"deleted": result.deleted_count == 1})
