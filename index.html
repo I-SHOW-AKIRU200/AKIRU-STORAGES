@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AKIRU VIDEO PLAYER</title>
+  <style>
+    :root {
+      --primary: #00f0ff;
+      --secondary: #ff00f0;
+      --dark: #0a0a12;
+      --light: #f0f0ff;
+      --glow: 0 0 15px currentColor;
+    }
+    
+    @font-face {
+      font-family: 'Cyber';
+      src: url('https://fonts.cdnfonts.com/css/cyberpunk') format('woff2');
+    }
+    
+    body {
+      margin: 0;
+      font-family: 'Cyber', 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+      color: var(--light);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .container {
+      text-align: center;
+      max-width: 90%;
+      padding: 2rem;
+      position: relative;
+    }
+
+    h1 {
+      font-size: 2.5rem;
+      margin-bottom: 1.5rem;
+      text-transform: uppercase;
+      letter-spacing: 3px;
+      color: var(--primary);
+      text-shadow: var(--glow);
+      position: relative;
+      display: inline-block;
+    }
+
+    h1::after {
+      content: '';
+      position: absolute;
+      bottom: -10px;
+      left: 0;
+      width: 100%;
+      height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      border-radius: 3px;
+    }
+
+    .video-wrapper {
+      position: relative;
+      display: inline-block;
+      margin-bottom: 2rem;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 0 30px rgba(0, 240, 255, 0.2);
+      transition: all 0.3s ease;
+    }
+
+    .video-wrapper:hover {
+      box-shadow: 0 0 40px rgba(0, 240, 255, 0.4);
+      transform: translateY(-5px);
+    }
+
+    video {
+      width: 100%;
+      max-width: 800px;
+      display: block;
+      border: none;
+      outline: none;
+    }
+
+    .controls {
+      display: flex;
+      justify-content: center;
+      gap: 1rem;
+      margin-top: 1.5rem;
+      flex-wrap: wrap;
+    }
+
+    button {
+      background: transparent;
+      color: var(--primary);
+      border: 2px solid var(--primary);
+      padding: 12px 28px;
+      font-size: 1rem;
+      font-family: 'Cyber', sans-serif;
+      border-radius: 50px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      position: relative;
+      overflow: hidden;
+      z-index: 1;
+    }
+
+    button::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: -100%;
+      width: 100%;
+      height: 100%;
+      background: linear-gradient(90deg, transparent, rgba(0, 240, 255, 0.2), transparent);
+      transition: all 0.5s ease;
+      z-index: -1;
+    }
+
+    button:hover {
+      color: var(--dark);
+      background: var(--primary);
+      text-shadow: 0 0 5px rgba(0, 0, 0, 0.5);
+      box-shadow: 0 0 15px var(--primary);
+    }
+
+    button:hover::before {
+      left: 100%;
+    }
+
+    button:active {
+      transform: scale(0.95);
+    }
+
+    .progress-container {
+      width: 100%;
+      max-width: 800px;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+      margin: 1rem auto;
+      cursor: pointer;
+      overflow: hidden;
+    }
+
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, var(--primary), var(--secondary));
+      width: 0%;
+      border-radius: 4px;
+      transition: width 0.1s linear;
+    }
+
+    .time-display {
+      display: flex;
+      justify-content: space-between;
+      width: 100%;
+      max-width: 800px;
+      margin: 0.5rem auto;
+      font-size: 0.9rem;
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    @media (max-width: 768px) {
+      h1 {
+        font-size: 1.8rem;
+      }
+      
+      button {
+        padding: 10px 20px;
+        font-size: 0.9rem;
+      }
+    }
+
+    /* Cyberpunk scanline effect */
+    body::after {
+      content: "";
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: linear-gradient(
+        rgba(0, 240, 255, 0.05) 1px,
+        transparent 1px
+      );
+      background-size: 100% 2px;
+      pointer-events: none;
+      z-index: 100;
+      animation: scanline 8s linear infinite;
+    }
+
+    @keyframes scanline {
+      0% { background-position: 0 0; }
+      100% { background-position: 0 100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎬 AKIRU VIDEO PLAYER</h1>
+    
+    <div class="video-wrapper">
+      <video id="video" poster="https://via.placeholder.com/800x450/0a0a12/00f0ff?text=AKIRU+VIDEO">
+        <source src="https://github.com/I-SHOW-AKIRU200/AKIRU-STORAGES/releases/download/video-upload/video.lv_0_20250718084307.mp4" type="video/mp4">
+        Your browser does not support HTML5 video.
+      </video>
+    </div>
+    
+    <div class="progress-container" id="progressContainer">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    
+    <div class="time-display">
+      <span id="currentTime">0:00</span>
+      <span id="duration">0:00</span>
+    </div>
+    
+    <div class="controls">
+      <button id="playBtn">▶️ PLAY</button>
+      <button id="pauseBtn">⏸️ PAUSE</button>
+      <button id="muteBtn">🔊 MUTE</button>
+      <button id="fullscreenBtn">⛶ FULLSCREEN</button>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const playBtn = document.getElementById('playBtn');
+    const pauseBtn = document.getElementById('pauseBtn');
+    const muteBtn = document.getElementById('muteBtn');
+    const fullscreenBtn = document.getElementById('fullscreenBtn');
+    const progressBar = document.getElementById('progressBar');
+    const progressContainer = document.getElementById('progressContainer');
+    const currentTimeDisplay = document.getElementById('currentTime');
+    const durationDisplay = document.getElementById('duration');
+
+    // Play/Pause functionality
+    playBtn.addEventListener('click', () => {
+      video.play();
+      playBtn.style.display = 'none';
+      pauseBtn.style.display = 'inline-block';
+    });
+
+    pauseBtn.addEventListener('click', () => {
+      video.pause();
+      pauseBtn.style.display = 'none';
+      playBtn.style.display = 'inline-block';
+    });
+
+    // Mute functionality
+    muteBtn.addEventListener('click', () => {
+      video.muted = !video.muted;
+      muteBtn.textContent = video.muted ? '🔇 UNMUTE' : '🔊 MUTE';
+    });
+
+    // Fullscreen functionality
+    fullscreenBtn.addEventListener('click', () => {
+      if (!document.fullscreenElement) {
+        video.requestFullscreen().catch(err => {
+          alert(`Error attempting to enable fullscreen: ${err.message}`);
+        });
+      } else {
+        document.exitFullscreen();
+      }
+    });
+
+    // Progress bar update
+    video.addEventListener('timeupdate', () => {
+      const progress = (video.currentTime / video.duration) * 100;
+      progressBar.style.width = `${progress}%`;
+      currentTimeDisplay.textContent = formatTime(video.currentTime);
+    });
+
+    // Set video duration when metadata is loaded
+    video.addEventListener('loadedmetadata', () => {
+      durationDisplay.textContent = formatTime(video.duration);
+    });
+
+    // Click on progress bar to seek
+    progressContainer.addEventListener('click', (e) => {
+      const width = progressContainer.clientWidth;
+      const clickX = e.offsetX;
+      const duration = video.duration;
+      video.currentTime = (clickX / width) * duration;
+    });
+
+    // Format time (seconds to MM:SS)
+    function formatTime(seconds) {
+      const minutes = Math.floor(seconds / 60);
+      const secs = Math.floor(seconds % 60);
+      return `${minutes}:${secs < 10 ? '0' : ''}${secs}`;
+    }
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      switch(e.code) {
+        case 'Space':
+          video.paused ? video.play() : video.pause();
+          break;
+        case 'ArrowRight':
+          video.currentTime += 5;
+          break;
+        case 'ArrowLeft':
+          video.currentTime -= 5;
+          break;
+        case 'KeyM':
+          video.muted = !video.muted;
+          muteBtn.textContent = video.muted ? '🔇 UNMUTE' : '🔊 MUTE';
+          break;
+        case 'KeyF':
+          if (!document.fullscreenElement) {
+            video.requestFullscreen();
+          } else {
+            document.exitFullscreen();
+          }
+          break;
+      }
+    });
+
+    // Initial setup
+    pauseBtn.style.display = 'none';
+  </script>
+</body>
+</html>
